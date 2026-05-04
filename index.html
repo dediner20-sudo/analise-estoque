@@ -3350,45 +3350,38 @@ async function sendAI(){
 
   input.value='';
   addMsg('user', escHtml(pergunta));
-
   const thinking=addMsg('bot','<span style="opacity:.5">🤖 Analisando seus dados...</span>');
   btn.disabled=true;
 
-  aiHistory.push({role:'user', content:pergunta});
-
   try{
-    const ctx=buildContexto();
-    const systemPrompt=`Você é assistente de gestão de estoque da CMJ (distribuidora FIAT, JEEP, RAM). Responda em português, seja direto e objetivo.
+    // Filtra dados LOCALMENTE antes de mandar para IA
+    const dados=filtrarDadosParaIA(pergunta);
 
-Use HTML para tabelas (classe ai-tbl). Formate valores em R$ brasileiro.
+    const prompt=`Você é assistente de gestão de estoque da CMJ (distribuidora FIAT, JEEP, RAM).
+Responda em português, seja direto e objetivo.
+Use tabela HTML simples quando listar itens (use tag <table> com border=1, sem classes).
+Formate valores monetários em R$ com vírgula decimal.
 
-CONTEXTO DOS DADOS:
-- Total SKUs em estoque: ${ctx.resumo.totalSkus}
-- Obsoletos: ${ctx.resumo.obsoletos}
-- Sugestões de compra: ${ctx.resumo.sugestoes}
-- Itens que ZERARAM mas vendiam (órfãos): ${ctx.resumo.orfaosTotal}
-- Desses órfãos, com oferta ativa: ${ctx.resumo.orfaosComOferta}
+RESUMO DO ESTOQUE:
+- Total SKUs: ${TAB.est.length}
+- Obsoletos: ${TAB.obs.length}
+- Itens sem estoque que vendiam (órfãos): ${(TAB.cmp||[]).filter(r=>r._orfao).length}
+- Órfãos com oferta ativa: ${(TAB.cmp||[]).filter(r=>r._orfao&&r.oferta).length}
 
-LEGENDA:
-- orfaos_com_oferta = itens que TINHAM estoque, ZERARAM, mas ESTÃO EM OFERTA agora
-- custo_hist = últimos custos históricos registrados nas vendas
-- oferta_preco = preço promocional atual da fábrica
-- curva A/B = alto/médio giro
+DADOS PRÉ-FILTRADOS PARA RESPONDER A PERGUNTA:
+${JSON.stringify(dados)}
 
-DADOS:
-${JSON.stringify(ctx)}`;
+PERGUNTA: ${pergunta}`;
 
     const response=await fetch(WORKER_URL,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({system:systemPrompt, messages:aiHistory})
+      body:JSON.stringify({prompt})
     });
 
     const data=await response.json();
-    if(data.error) throw new Error(data.error+(data.debug?'\nDebug: '+data.debug:''));
+    if(data.error) throw new Error(data.error);
     const resposta=data.text||'Não consegui processar sua pergunta.';
-    aiHistory.push({role:'assistant', content:resposta});
-    if(aiHistory.length>10) aiHistory=aiHistory.slice(-10);
 
     thinking.innerHTML=`<div class="ai-bubble">${resposta}</div>`;
     thinking.className='ai-msg ai-bot';
@@ -3398,6 +3391,66 @@ ${JSON.stringify(ctx)}`;
   }
   btn.disabled=false;
   document.getElementById('ai-msgs').scrollTop=document.getElementById('ai-msgs').scrollHeight;
+}
+
+function filtrarDadosParaIA(pergunta){
+  const p=pergunta.toLowerCase();
+
+  // Órfãos com oferta (tinha estoque, zerou, está em oferta)
+  if(p.includes('oferta')&&(p.includes('não tenho')||p.includes('zerado')||p.includes('falta')||p.includes('sem estoque')||p.includes('tinha'))){
+    return (TAB.cmp||[]).filter(r=>r._orfao&&r.oferta).slice(0,50).map(r=>({
+      sku:r.sku, descricao:(r.descricao||'').slice(0,50),
+      curva:r.curva, dem_real:r.dem_real,
+      oferta_preco:r.oferta?.preco_promo,
+      custo_historico:r.custo_avg?Object.entries(r.custo_avg).filter(([,v])=>v>0).slice(-3).map(([m,v])=>m+':R$'+v.toFixed(2)).join(', '):'—',
+      sug_compra:r.sug_cmp
+    }));
+  }
+
+  // Obsoletos
+  if(p.includes('obsoleto')||p.includes('parado')||p.includes('sem movimento')){
+    return (TAB.obs||[]).slice(0,50).map(r=>({
+      sku:r.sku, descricao:(r.descricao||'').slice(0,50),
+      curva:r.curva, estq:r.estq,
+      custo:r.custo_at, valor_parado:Math.round((r.custo_at||0)*(r.estq||0)),
+      dias:r.dias_mov, oferta:r.oferta?.preco_promo||null
+    }));
+  }
+
+  // Sugestão de compra / falta de estoque
+  if(p.includes('comprar')||p.includes('compra')||p.includes('repor')||p.includes('falta')||p.includes('zerado')||p.includes('sem estoque')){
+    return (TAB.cmp||[]).filter(r=>r.sug_cmp>0).slice(0,50).map(r=>({
+      sku:r.sku, descricao:(r.descricao||'').slice(0,50),
+      curva:r.curva, estq:r.estq, dem_real:r.dem_real,
+      sug_compra:r.sug_cmp, cobertura:r.cobertura,
+      oferta:r.oferta?.preco_promo||null, status:r.status_estoque
+    }));
+  }
+
+  // Curva A ou B
+  if(p.includes('curva a')||p.includes('curva b')||p.includes('alto giro')||p.includes('melhor')){
+    const curvas=p.includes('curva a')?['A']:p.includes('curva b')?['B']:['A','B'];
+    return (TAB.est||[]).filter(r=>curvas.includes(r.curva)).slice(0,50).map(r=>({
+      sku:r.sku, descricao:(r.descricao||'').slice(0,50),
+      curva:r.curva, estq:r.estq, dem_real:r.dem_real,
+      custo:r.custo_at, status:r.status_estoque, oferta:r.oferta?.preco_promo||null
+    }));
+  }
+
+  // Com oferta
+  if(p.includes('oferta')){
+    return (TAB.est||[]).filter(r=>r.oferta).slice(0,50).map(r=>({
+      sku:r.sku, descricao:(r.descricao||'').slice(0,50),
+      curva:r.curva, estq:r.estq, dem_real:r.dem_real,
+      custo:r.custo_at, oferta_preco:r.oferta?.preco_promo
+    }));
+  }
+
+  // Default: resumo geral
+  return {
+    resumo_estoque:{total:TAB.est.length, obsoletos:TAB.obs.length, com_oferta:(TAB.est||[]).filter(r=>r.oferta).length},
+    top_curva_a:(TAB.est||[]).filter(r=>r.curva==='A').slice(0,20).map(r=>({sku:r.sku,desc:(r.descricao||'').slice(0,40),estq:r.estq,dem:r.dem_real}))
+  };
 }
 </script>
 </body>
