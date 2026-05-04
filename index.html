@@ -3326,6 +3326,8 @@ function addMsg(role, html){
   return div;
 }
 
+const WORKER_URL='https://round-sunset-9025.dediner20.workers.dev';
+
 async function sendAI(){
   const input=document.getElementById('ai-input');
   const btn=document.getElementById('ai-send-btn');
@@ -3344,46 +3346,37 @@ async function sendAI(){
   try{
     const ctx=buildContexto();
     const systemPrompt=`Você é um assistente especializado em gestão de estoque automotivo da empresa CMJ (distribuidora de peças FIAT, JEEP, RAM).
+Responda sempre em português brasileiro. Seja direto e objetivo.
+Quando mostrar listas de itens, use HTML com tabela simples (classe ai-tbl).
+Para valores monetários use R$ com separador de milhar.
 
-Você tem acesso aos dados de estoque analisados. Responda sempre em português brasileiro.
-Seja direto e objetivo. Quando mostrar listas de itens, use HTML com tabela simples (classe ai-tbl).
-Para valores monetários use R$ com separador de milhar. Para quantidades use o número simples.
-
-DADOS ATUAIS DO ESTOQUE:
-${JSON.stringify(ctx, null, 0)}
+DADOS ATUAIS:
+${JSON.stringify(ctx)}
 
 REGRAS:
-- curva A = alto giro, B = médio, C = baixo, N/— = sem histórico
-- status RETOMAR = vendia mas está sem estoque (órfão)
+- curva A = alto giro, B = médio, C = baixo
+- status RETOMAR = vendia mas está sem estoque
 - obsoleto = sem movimento há muito tempo
-- oferta = tem preço promocional da fábrica disponível
-- sug = sugestão de compra calculada pelo sistema
-- Quando listar itens, mostre no máximo 20 e indique o total encontrado
-- Formate números brasileiros (vírgula decimal, ponto milhar)`;
+- oferta = tem preço promocional da fábrica
+- Mostre no máximo 20 itens e indique o total encontrado`;
 
-    const response=await fetch('https://api.anthropic.com/v1/messages',{
+    const response=await fetch(WORKER_URL,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-20250514',
-        max_tokens:1500,
-        system:systemPrompt,
-        messages:aiHistory
-      })
+      body:JSON.stringify({system:systemPrompt, messages:aiHistory})
     });
 
     const data=await response.json();
-    const resposta=data.content?.[0]?.text||'Não consegui processar sua pergunta.';
+    if(data.error) throw new Error(data.error);
+    const resposta=data.text||'Não consegui processar sua pergunta.';
     aiHistory.push({role:'assistant', content:resposta});
-
-    // Limita histórico para não explodir o contexto
     if(aiHistory.length>10) aiHistory=aiHistory.slice(-10);
 
     thinking.innerHTML=`<div class="ai-bubble">${resposta}</div>`;
     thinking.className='ai-msg ai-bot';
 
   }catch(err){
-    thinking.innerHTML=`<div class="ai-bubble" style="color:var(--rd)">Erro ao conectar com a IA: ${err.message}</div>`;
+    thinking.innerHTML=`<div class="ai-bubble" style="color:var(--rd)">Erro: ${err.message}</div>`;
   }
   btn.disabled=false;
   document.getElementById('ai-msgs').scrollTop=document.getElementById('ai-msgs').scrollHeight;
