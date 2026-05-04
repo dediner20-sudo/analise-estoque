@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
@@ -3280,38 +3281,52 @@ function toggleAI(){
 }
 
 function buildContexto(){
-  // Monta um resumo compacto dos dados para enviar à IA
   const cfg=getCfg();
-  const estItems=(TAB.est||[]).slice(0,2000).map(r=>({
-    sku:r.sku, desc:r.descricao?.slice(0,40), marca:r.marca,
-    curva:r.curva, estq:r.estq, dem:r.dem_real,
-    custo:r.custo_at, cobertura:r.cobertura,
-    status:r.status_estoque, obs:r.obsoleto,
-    oferta:r.oferta?r.oferta.preco_promo:null,
-    sug:r.sug_cmp, alerta:r.alerta
+
+  // Foca nos dados mais relevantes e limita tamanho
+  const orfaosComOferta=(TAB.cmp||[]).filter(r=>r._orfao&&r.oferta).slice(0,100).map(r=>({
+    sku:r.sku, desc:(r.descricao||'').slice(0,40), curva:r.curva,
+    dem:r.dem_real, sug:r.sug_cmp,
+    oferta_preco:r.oferta?.preco_promo||null,
+    custo_hist:r.custo_avg?Object.values(r.custo_avg).filter(v=>v>0).slice(-3):[]
   }));
-  const cmpItems=(TAB.cmp||[]).slice(0,500).map(r=>({
-    sku:r.sku, desc:r.descricao?.slice(0,40), curva:r.curva,
-    estq:r.estq, dem:r.dem_real, sug:r.sug_cmp,
-    oferta:r.oferta?r.oferta.preco_promo:null,
-    status:r.status_estoque, orfao:r._orfao
+
+  const cmpUrgente=(TAB.cmp||[]).filter(r=>!r._orfao&&r.sug_cmp>0).slice(0,100).map(r=>({
+    sku:r.sku, desc:(r.descricao||'').slice(0,40), curva:r.curva,
+    estq:r.estq, dem:r.dem_real, sug:r.sug_cmp, cobertura:r.cobertura,
+    oferta:r.oferta?.preco_promo||null, custo:r.custo_at, status:r.status_estoque
   }));
-  const obsItems=(TAB.obs||[]).slice(0,300).map(r=>({
-    sku:r.sku, desc:r.descricao?.slice(0,40), curva:r.curva,
-    estq:r.estq, custo:r.custo_at, valorParado:(r.custo_at||0)*(r.estq||0),
-    dias:r.dias_mov, oferta:r.oferta?r.oferta.preco_promo:null
+
+  const obsDestaque=(TAB.obs||[]).slice(0,80).map(r=>({
+    sku:r.sku, desc:(r.descricao||'').slice(0,40), curva:r.curva,
+    estq:r.estq, custo:r.custo_at,
+    valorParado:Math.round((r.custo_at||0)*(r.estq||0)),
+    dias:r.dias_mov, oferta:r.oferta?.preco_promo||null
   }));
+
+  const estDestaque=(TAB.est||[]).filter(r=>['A','B'].includes(r.curva)).slice(0,100).map(r=>({
+    sku:r.sku, desc:(r.descricao||'').slice(0,40), curva:r.curva,
+    estq:r.estq, dem:r.dem_real, custo:r.custo_at,
+    oferta:r.oferta?.preco_promo||null, status:r.status_estoque
+  }));
+
   return {
     config:{janela:cfg.mesesAnalise, ref:cfg.ref?.toISOString?.()?.slice(0,10)},
     resumo:{
       totalSkus:TAB.est?.length||0,
       obsoletos:TAB.obs?.length||0,
       sugestoes:TAB.cmp?.length||0,
-      semEstoqueComVenda:(TAB.cmp||[]).filter(r=>r._orfao).length
+      orfaosTotal:(TAB.cmp||[]).filter(r=>r._orfao).length,
+      orfaosComOferta:orfaosComOferta.length
     },
-    estoque:estItems,
-    compras:cmpItems,
-    obsoletos:obsItems
+    // Itens que zeraram mas estão em oferta (responde perguntas como "tinha estoque, não tenho mais, está em oferta")
+    orfaos_com_oferta: orfaosComOferta,
+    // Sugestões urgentes de compra
+    compras_urgentes: cmpUrgente,
+    // Obsoletos em destaque
+    obsoletos: obsDestaque,
+    // Curva A/B em estoque
+    estoque_ab: estDestaque
   };
 }
 
@@ -3344,20 +3359,25 @@ async function sendAI(){
 
   try{
     const ctx=buildContexto();
-    const systemPrompt=`Você é um assistente especializado em gestão de estoque automotivo da empresa CMJ (distribuidora de peças FIAT, JEEP, RAM).
-Responda sempre em português brasileiro. Seja direto e objetivo.
-Quando mostrar listas de itens, use HTML com tabela simples (classe ai-tbl).
-Para valores monetários use R$ com separador de milhar.
+    const systemPrompt=`Você é assistente de gestão de estoque da CMJ (distribuidora FIAT, JEEP, RAM). Responda em português, seja direto e objetivo.
 
-DADOS ATUAIS:
-${JSON.stringify(ctx)}
+Use HTML para tabelas (classe ai-tbl). Formate valores em R$ brasileiro.
 
-REGRAS:
-- curva A = alto giro, B = médio, C = baixo
-- status RETOMAR = vendia mas está sem estoque
-- obsoleto = sem movimento há muito tempo
-- oferta = tem preço promocional da fábrica
-- Mostre no máximo 20 itens e indique o total encontrado`;
+CONTEXTO DOS DADOS:
+- Total SKUs em estoque: ${ctx.resumo.totalSkus}
+- Obsoletos: ${ctx.resumo.obsoletos}
+- Sugestões de compra: ${ctx.resumo.sugestoes}
+- Itens que ZERARAM mas vendiam (órfãos): ${ctx.resumo.orfaosTotal}
+- Desses órfãos, com oferta ativa: ${ctx.resumo.orfaosComOferta}
+
+LEGENDA:
+- orfaos_com_oferta = itens que TINHAM estoque, ZERARAM, mas ESTÃO EM OFERTA agora
+- custo_hist = últimos custos históricos registrados nas vendas
+- oferta_preco = preço promocional atual da fábrica
+- curva A/B = alto/médio giro
+
+DADOS:
+${JSON.stringify(ctx)}`;
 
     const response=await fetch(WORKER_URL,{
       method:'POST',
@@ -3366,7 +3386,7 @@ REGRAS:
     });
 
     const data=await response.json();
-    if(data.error) throw new Error(data.error);
+    if(data.error) throw new Error(data.error+(data.debug?'\nDebug: '+data.debug:''));
     const resposta=data.text||'Não consegui processar sua pergunta.';
     aiHistory.push({role:'assistant', content:resposta});
     if(aiHistory.length>10) aiHistory=aiHistory.slice(-10);
